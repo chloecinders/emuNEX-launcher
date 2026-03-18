@@ -49,7 +49,12 @@ fn main() {
 
 fn run_server() -> std::io::Result<ExitStatus> {
     let bin = server_binary_path();
-    Command::new(&bin).status()
+    Command::new(&bin)
+        .stderr(std::process::Stdio::inherit())
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .envs(std::env::vars())
+        .status()
 }
 
 pub fn server_binary_path() -> std::path::PathBuf {
