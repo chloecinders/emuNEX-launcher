@@ -36,10 +36,11 @@ struct Artifact {
 pub fn pull_update() -> Result<(), String> {
     let cfg = LauncherConfig::load().map_err(|e| format!("config error: {e}"))?;
 
-    let repo = cfg.repository.ok_or("No repository configured in Config.toml")?;
+    let repo = cfg
+        .repository
+        .ok_or("No repository configured in Config.toml")?;
     let client = reqwest::blocking::Client::new();
 
-    // --- 1. Find the latest successful workflow run ---
     let mut req = client
         .get(format!(
             "https://api.github.com/repos/{repo}/actions/runs?per_page=1"
@@ -56,10 +57,7 @@ pub fn pull_update() -> Result<(), String> {
         .json()
         .map_err(|e| format!("runs parse error: {e}"))?;
 
-    let run = runs
-        .workflow_runs
-        .first()
-        .ok_or("No workflow runs found")?;
+    let run = runs.workflow_runs.first().ok_or("No workflow runs found")?;
 
     if run.status != "completed" || run.conclusion.as_deref() != Some("success") {
         return Err(format!(
@@ -68,7 +66,6 @@ pub fn pull_update() -> Result<(), String> {
         ));
     }
 
-    // --- 2. Find the right artifact ---
     let mut art_req = client
         .get(&run.artifacts_url)
         .header("User-Agent", "emunex-launcher");
@@ -83,14 +80,12 @@ pub fn pull_update() -> Result<(), String> {
         .json()
         .map_err(|e| format!("artifacts parse error: {e}"))?;
 
-    // Pick the artifact that doesn't end in .exe (the linux build)
     let artifact = art_json
         .artifacts
         .iter()
         .find(|a| !a.name.ends_with(".exe"))
         .ok_or("No valid artifact found in the run")?;
 
-    // --- 3. Download the zip ---
     let mut dl_req = client
         .get(&artifact.archive_download_url)
         .header("User-Agent", "emunex-launcher");
@@ -105,7 +100,6 @@ pub fn pull_update() -> Result<(), String> {
         .bytes()
         .map_err(|e| format!("body read error: {e}"))?;
 
-    // --- 4. Extract the zip ---
     let base_dir = launcher_dir();
     let temp_bin = base_dir.join("emunex-server.new");
     let mut binary_found = false;
@@ -128,8 +122,7 @@ pub fn pull_update() -> Result<(), String> {
             let target_path = base_dir.join(&name);
 
             if name.ends_with('/') {
-                fs::create_dir_all(&target_path)
-                    .map_err(|e| format!("create dir {name}: {e}"))?;
+                fs::create_dir_all(&target_path).map_err(|e| format!("create dir {name}: {e}"))?;
             } else {
                 if let Some(parent) = target_path.parent() {
                     if !parent.exists() {
@@ -139,8 +132,7 @@ pub fn pull_update() -> Result<(), String> {
                 }
                 let mut outfile = fs::File::create(&target_path)
                     .map_err(|e| format!("create file {name}: {e}"))?;
-                io::copy(&mut file, &mut outfile)
-                    .map_err(|e| format!("write file {name}: {e}"))?;
+                io::copy(&mut file, &mut outfile).map_err(|e| format!("write file {name}: {e}"))?;
             }
         }
     }
@@ -149,7 +141,6 @@ pub fn pull_update() -> Result<(), String> {
         return Err("Binary not found in artifact zip".into());
     }
 
-    // --- 5. Swap the binary ---
     let server_bin = if cfg!(target_os = "windows") {
         base_dir.join("emunex-server.exe")
     } else {

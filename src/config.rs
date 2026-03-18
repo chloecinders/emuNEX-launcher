@@ -9,7 +9,6 @@ pub struct LauncherConfig {
 
 impl LauncherConfig {
     pub fn load() -> Result<Self, String> {
-        // Look for Config.toml in the same directory as the launcher
         let config_path = std::env::current_exe()
             .unwrap_or_default()
             .parent()
