@@ -35,10 +35,7 @@ struct Artifact {
 
 pub fn pull_update() -> Result<(), String> {
     let cfg = LauncherConfig::load().map_err(|e| format!("config error: {e}"))?;
-
-    let repo = cfg
-        .repository
-        .ok_or("No repository configured in Config.toml")?;
+    let repo = cfg.repository.ok_or("No repository configured")?;
     let client = reqwest::blocking::Client::new();
 
     let mut req = client
@@ -46,99 +43,96 @@ pub fn pull_update() -> Result<(), String> {
             "https://api.github.com/repos/{repo}/actions/runs?per_page=1"
         ))
         .header("User-Agent", "emunex-launcher");
-
     if let Some(token) = &cfg.github_token {
         req = req.header("Authorization", format!("Bearer {token}"));
     }
 
     let runs: WorkflowRunsResponse = req
         .send()
-        .map_err(|e| format!("runs fetch error: {e}"))?
+        .map_err(|e| e.to_string())?
         .json()
-        .map_err(|e| format!("runs parse error: {e}"))?;
-
-    let run = runs.workflow_runs.first().ok_or("No workflow runs found")?;
-
-    if run.status != "completed" || run.conclusion.as_deref() != Some("success") {
-        return Err(format!(
-            "Latest CI run is not successful (status={}, conclusion={:?})",
-            run.status, run.conclusion
-        ));
-    }
+        .map_err(|e| e.to_string())?;
+    let run = runs.workflow_runs.first().ok_or("No runs")?;
 
     let mut art_req = client
         .get(&run.artifacts_url)
         .header("User-Agent", "emunex-launcher");
-
     if let Some(token) = &cfg.github_token {
         art_req = art_req.header("Authorization", format!("Bearer {token}"));
     }
 
     let art_json: ArtifactsResponse = art_req
         .send()
-        .map_err(|e| format!("artifacts fetch error: {e}"))?
+        .map_err(|e| e.to_string())?
         .json()
-        .map_err(|e| format!("artifacts parse error: {e}"))?;
-
+        .map_err(|e| e.to_string())?;
     let artifact = art_json
         .artifacts
         .iter()
         .find(|a| !a.name.ends_with(".exe"))
-        .ok_or("No valid artifact found in the run")?;
+        .ok_or("No artifact")?;
 
     let mut dl_req = client
         .get(&artifact.archive_download_url)
         .header("User-Agent", "emunex-launcher");
-
     if let Some(token) = &cfg.github_token {
         dl_req = dl_req.header("Authorization", format!("Bearer {token}"));
     }
 
     let bytes = dl_req
         .send()
-        .map_err(|e| format!("download error: {e}"))?
+        .map_err(|e| e.to_string())?
         .bytes()
-        .map_err(|e| format!("body read error: {e}"))?;
-
+        .map_err(|e| e.to_string())?;
     let base_dir = launcher_dir();
-    let temp_bin = base_dir.join("emunex-server.new");
-    let mut binary_found = false;
 
-    let reader = Cursor::new(bytes);
-    let mut zip = zip::ZipArchive::new(reader).map_err(|e| format!("zip error: {e}"))?;
+    let pub_path = base_dir.join("public");
+    let tmpl_path = base_dir.join("templates");
+    if pub_path.exists() {
+        fs::remove_dir_all(&pub_path).ok();
+    }
+    if tmpl_path.exists() {
+        fs::remove_dir_all(&tmpl_path).ok();
+    }
+
+    let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| e.to_string())?;
+    let mut binary_found = false;
+    let temp_bin = base_dir.join("emunex-server.new");
 
     for i in 0..zip.len() {
-        let mut file = zip
-            .by_index(i)
-            .map_err(|e| format!("zip entry error: {e}"))?;
-        let name = file.name().to_string();
+        let mut file = zip.by_index(i).map_err(|e| e.to_string())?;
+        let name = file.name();
 
-        if name == "target/release/emunex-server" || name == "target/release/emunex-server.exe" {
-            let mut outfile =
-                fs::File::create(&temp_bin).map_err(|e| format!("create temp binary: {e}"))?;
-            io::copy(&mut file, &mut outfile).map_err(|e| format!("write temp binary: {e}"))?;
+        if name.ends_with("emunex-server") || name.ends_with("emunex-server.exe") {
+            let mut outfile = fs::File::create(&temp_bin).map_err(|e| e.to_string())?;
+            io::copy(&mut file, &mut outfile).map_err(|e| e.to_string())?;
             binary_found = true;
-        } else if name.starts_with("templates") || name.starts_with("public") {
-            let target_path = base_dir.join(&name);
-
-            if name.ends_with('/') {
-                fs::create_dir_all(&target_path).map_err(|e| format!("create dir {name}: {e}"))?;
+        } else {
+            let relative_path = if let Some(idx) = name.find("templates/") {
+                Some(&name[idx..])
+            } else if let Some(idx) = name.find("public/") {
+                Some(&name[idx..])
             } else {
-                if let Some(parent) = target_path.parent() {
-                    if !parent.exists() {
-                        fs::create_dir_all(parent)
-                            .map_err(|e| format!("create parent for {name}: {e}"))?;
+                None
+            };
+
+            if let Some(rel) = relative_path {
+                let target_path = base_dir.join(rel);
+                if name.ends_with('/') {
+                    fs::create_dir_all(&target_path).ok();
+                } else {
+                    if let Some(p) = target_path.parent() {
+                        fs::create_dir_all(p).ok();
                     }
+                    let mut outfile = fs::File::create(&target_path).map_err(|e| e.to_string())?;
+                    io::copy(&mut file, &mut outfile).map_err(|e| e.to_string())?;
                 }
-                let mut outfile = fs::File::create(&target_path)
-                    .map_err(|e| format!("create file {name}: {e}"))?;
-                io::copy(&mut file, &mut outfile).map_err(|e| format!("write file {name}: {e}"))?;
             }
         }
     }
 
     if !binary_found {
-        return Err("Binary not found in artifact zip".into());
+        return Err("No binary".into());
     }
 
     let server_bin = if cfg!(target_os = "windows") {
@@ -146,14 +140,10 @@ pub fn pull_update() -> Result<(), String> {
     } else {
         base_dir.join("emunex-server")
     };
-
     #[cfg(not(target_os = "windows"))]
-    fs::set_permissions(&temp_bin, Permissions::from_mode(0o755))
-        .map_err(|e| format!("chmod error: {e}"))?;
+    fs::set_permissions(&temp_bin, fs::Permissions::from_mode(0o755)).ok();
 
-    fs::rename(&temp_bin, &server_bin).map_err(|e| format!("rename error: {e}"))?;
-
-    println!("[launcher] binary swapped successfully");
+    fs::rename(&temp_bin, &server_bin).map_err(|e| e.to_string())?;
     Ok(())
 }
 
