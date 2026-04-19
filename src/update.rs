@@ -47,11 +47,17 @@ pub fn pull_update() -> Result<(), String> {
         req = req.header("Authorization", format!("Bearer {token}"));
     }
 
-    let runs: WorkflowRunsResponse = req
-        .send()
-        .map_err(|e| e.to_string())?
+    let resp = req.send().map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!(
+            "GitHub API error (runs): {} - {}",
+            resp.status(),
+            resp.text().unwrap_or_default()
+        ));
+    }
+    let runs: WorkflowRunsResponse = resp
         .json()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("JSON decode error (runs): {e}"))?;
     let run = runs.workflow_runs.first().ok_or("No runs")?;
 
     let mut art_req = client
@@ -61,11 +67,17 @@ pub fn pull_update() -> Result<(), String> {
         art_req = art_req.header("Authorization", format!("Bearer {token}"));
     }
 
-    let art_json: ArtifactsResponse = art_req
-        .send()
-        .map_err(|e| e.to_string())?
+    let art_resp = art_req.send().map_err(|e| e.to_string())?;
+    if !art_resp.status().is_success() {
+        return Err(format!(
+            "GitHub API error (artifacts): {} - {}",
+            art_resp.status(),
+            art_resp.text().unwrap_or_default()
+        ));
+    }
+    let art_json: ArtifactsResponse = art_resp
         .json()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("JSON decode error (artifacts): {e}"))?;
     let artifact = art_json
         .artifacts
         .iter()
